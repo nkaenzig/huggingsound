@@ -82,7 +82,7 @@ class SpeechRecognitionModel():
             self.processor = None
             self.token_set = None
 
-    def transcribe(self, paths: list[str], batch_size: Optional[int] = 1, decoder: Optional[Decoder] = None) -> list[dict]:
+    def transcribe(self, paths: list[str], batch_size: Optional[int] = 1, decoder: Optional[Decoder] = None, logits_out: bool = False) -> list[dict]:
         """ 
         Transcribe audio files.
 
@@ -131,7 +131,10 @@ class SpeechRecognitionModel():
                 else:
                     logits = self.model(inputs.input_values.to(self.device)).logits
 
-            result += decoder(logits)
+            if logits_out:
+                result += logits
+            else:
+                result += decoder(logits)
 
         return result 
 
@@ -243,8 +246,8 @@ class SpeechRecognitionModel():
             sample["input_values"] = processor(waveform, sampling_rate=sampling_rate, do_normalize=True).input_values[0]
 
             # Building labels
-            ## appending a " " because the CTC loss concatenates all batches into a single vector, so we need to separate sentences by a whitespace
-            transcription = text_normalizer(sample["transcription"]) + " " 
+            ## appending a silence token at the end because the CTC loss concatenates all batches into a single vector, so we need to separate sentences by a whitespace
+            transcription = text_normalizer(sample["transcription"]) + self.token_set.silence_token
             with processor.as_target_processor():
                 sample["labels"] = processor(transcription).input_ids
 
@@ -341,6 +344,7 @@ class SpeechRecognitionModel():
             model_args = ModelArguments()
 
         processor = self.processor if self.is_finetuned else token_set.to_processor(self.model_path)
+        self.token_set = token_set
 
         os.makedirs(output_dir, exist_ok=True)
 
