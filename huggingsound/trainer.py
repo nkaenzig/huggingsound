@@ -76,6 +76,11 @@ class ModelArguments:
     ctc_zero_infinity: Optional[bool] = False
         Whether to zero infinite losses and the associated gradients of ``torch.nn.CTCLoss``. Infinite losses
         mainly occur when the inputs are too short to be aligned to the targets
+
+    ignore_mismatched_sizes: Optional[bool] = False
+        When using a pre-trained model that has been finetuned already, the token set being used has to match 
+        the one used for fine tuning in order to load the model weights for the model head. Setting this parameter
+        to True allows finetuning such a model using a different Token Set, by attaching a new model head
     """
 
     freeze_feature_extractor: bool = field(default=True)
@@ -92,6 +97,7 @@ class ModelArguments:
     apply_spec_augment: bool = field(default=True)
     ctc_loss_reduction: str = field(default="sum")
     ctc_zero_infinity: bool = field(default=False)
+    ignore_mismatched_sizes: bool = field(default=False)
 
 
 @dataclass
@@ -583,7 +589,7 @@ def finetune_ctc(model_name_or_path: str, output_dir: str, processor: Wav2Vec2Pr
     if training_args.ignore_pretrained_weights:
         model = AutoModelForCTC.from_config(config=config)
     else:
-        model = AutoModelForCTC.from_pretrained(model_name_or_path, config=config)
+        model = AutoModelForCTC.from_pretrained(model_name_or_path, config=config, ignore_mismatched_sizes=model_args.ignore_mismatched_sizes)
 
     if hftraining_args.gradient_checkpointing:
         model.gradient_checkpointing_enable()

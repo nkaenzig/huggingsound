@@ -60,7 +60,12 @@ class SpeechRecognitionModel():
 
     def _load_model(self):
 
-        self.model = AutoModelForCTC.from_pretrained(self.model_path)
+        try:
+            self.model = AutoModelForCTC.from_pretrained(self.model_path)
+        except ValueError as e:
+            if 'vocab_size' in str(e):
+                self.model = AutoModelForCTC.from_pretrained(self.model_path, vocab_size=32)
+                
         self.model.to(self.device)
 
         try:
