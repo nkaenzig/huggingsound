@@ -41,12 +41,13 @@ class Decoder():
     """
 
     def __init__(self, token_set: TokenSet, skip_special_tokens: Optional[bool] = True, ms_per_timestep: Optional[int] = 20, 
-                 probability_offset: Optional[float] = 1):
+                 probability_offset: Optional[float] = 1, return_ids: bool = False):
 
         self.token_set = token_set
         self.skip_special_tokens = skip_special_tokens
         self.ms_per_timestep = ms_per_timestep
         self.probability_offset = probability_offset
+        self.return_ids = return_ids
 
     def _get_predictions(self, logits: torch.Tensor) -> list[dict]:
         """ 
@@ -155,6 +156,7 @@ class Decoder():
             transcription_start_timestamps = []
             transcription_end_timestamps = []
             transcription_probabilities = []
+            prediction_ids = []
 
             if "transcription" in prediction:
                 transcription = prediction["transcription"]
@@ -198,6 +200,8 @@ class Decoder():
                     window_probabilities = [x[predicted_id] for x in logits_probs[i][start_timestep:window_end_timestep]]
                     probability = float(np.mean(window_probabilities))
                     transcription_probabilities.append(probability)
+                    prediction_ids.append(predicted_id)
+
 
                 if prediction["end_timesteps"] is not None:
                     end_timestep = prediction["end_timesteps"][j]
@@ -220,14 +224,20 @@ class Decoder():
                     transcription_end_timestamps = transcription_end_timestamps[left_offset:len(transcription_end_timestamps)-right_offset]
                 if len(transcription_probabilities) > 0:    
                     transcription_probabilities = transcription_probabilities[left_offset:len(transcription_probabilities)-right_offset]
+                if len(prediction_ids) > 0:    
+                    prediction_ids = prediction_ids[left_offset:len(prediction_ids)-right_offset]
             
-            result.append({
+            transcription_dict = {
                 "transcription": transcription,
                 "start_timestamps": transcription_start_timestamps if len(transcription_start_timestamps) > 0 else None,
                 "end_timestamps": transcription_end_timestamps if len(transcription_end_timestamps) > 0 else None,
                 "probabilities": transcription_probabilities if len(transcription_probabilities) > 0 else None,
-            })
-        
+            }
+            if self.return_ids:
+                transcription_dict["prediction_ids"] = prediction_ids
+
+            result.append(transcription_dict)
+
         return result
 
 
@@ -241,8 +251,8 @@ class GreedyDecoder(Decoder):
         The TokenSet object to use for decoding.
     """
 
-    def __init__(self, token_set: TokenSet):
-        super().__init__(token_set)
+    def __init__(self, token_set: TokenSet, *args, **kwargs):
+        super().__init__(token_set, *args, **kwargs)
 
     def _get_predictions(self, logits: torch.Tensor):
 
