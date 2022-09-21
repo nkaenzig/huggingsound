@@ -144,6 +144,92 @@ class Decoder():
                     "end_timesteps": list,
                 }, ...]
         """
+        def get_prediction_dict(prediction):
+            transcription = ""
+            transcription_start_timestamps = []
+            transcription_end_timestamps = []
+            transcription_probabilities = []
+            prediction_ids = []
+
+            if "transcription" in prediction:
+                transcription = prediction["transcription"]
+                J = range(len(transcription))
+            else:
+                J = range(len(prediction["ids"]))
+
+            for j in J:
+
+                if "transcription" in prediction:
+                    token = transcription[j] if transcription[j] != " " else self.token_set.silence_token
+                    if token not in self.token_set.tokens:
+                        token = self.token_set.unk_token
+                    predicted_id = self.token_set.id_by_token[token]
+                else:
+                    predicted_id = prediction["ids"][j]
+
+                    if predicted_id == self.token_set.silence_token_id:
+                        transcription += " "
+                    elif self.skip_special_tokens and self.token_set.tokens[predicted_id] in self.token_set.special_tokens:
+                        continue
+                    else:
+                        transcription += self.token_set.tokens[predicted_id]
+                
+                if prediction["start_timesteps"] is not None:
+                    start_timestep = prediction["start_timesteps"][j]
+                    transcription_start_timestamps.append(int(start_timestep * self.ms_per_timestep))
+
+                    # as we report the character based probability and more than one timestep can be responsable for the character prediction,
+                    # when a start_timestep and end_timestep are provided we'll report the mean value of the this range of timesteps,
+                    # otherwise we'll report the mean probability of a window defined be the start_timestep_t and start_timestep_t+1
+
+                    if prediction["end_timesteps"] is not None:
+                        window_end_timestep = prediction["end_timesteps"][j]
+                    else:
+                        window_end_timestep = start_timestep + 1
+                    
+                    if start_timestep == window_end_timestep: # it needs to have at least one timestep of difference
+                        window_end_timestep += 1
+
+                    window_probabilities = [x[predicted_id] for x in logits_probs[i][start_timestep:window_end_timestep]]
+                    probability = float(np.mean(window_probabilities))
+                    transcription_probabilities.append(probability)
+                    prediction_ids.append(predicted_id)
+
+
+                if prediction["end_timesteps"] is not None:
+                    end_timestep = prediction["end_timesteps"][j]
+                    transcription_end_timestamps.append(int(end_timestep * self.ms_per_timestep))
+
+                    #probability = float(logits_probs[i][start_timestep][predicted_id])
+                    #transcription_probabilities[-1] = probability
+
+            # transcription trimming
+            if len(transcription) > 0:
+                
+                left_offset = len(transcription) - len(transcription.lstrip())
+                right_offset = len(transcription) - len(transcription.rstrip())
+
+                transcription = transcription[left_offset:len(transcription)-right_offset]
+
+                if len(transcription_start_timestamps) > 0:
+                    transcription_start_timestamps = transcription_start_timestamps[left_offset:len(transcription_start_timestamps)-right_offset]
+                if len(transcription_end_timestamps) > 0:
+                    transcription_end_timestamps = transcription_end_timestamps[left_offset:len(transcription_end_timestamps)-right_offset]
+                if len(transcription_probabilities) > 0:    
+                    transcription_probabilities = transcription_probabilities[left_offset:len(transcription_probabilities)-right_offset]
+                if len(prediction_ids) > 0:    
+                    prediction_ids = prediction_ids[left_offset:len(prediction_ids)-right_offset]
+            
+            transcription_dict = {
+                "transcription": transcription,
+                "start_timestamps": transcription_start_timestamps if len(transcription_start_timestamps) > 0 else None,
+                "end_timestamps": transcription_end_timestamps if len(transcription_end_timestamps) > 0 else None,
+                "probabilities": transcription_probabilities if len(transcription_probabilities) > 0 else None,
+            }
+            if self.return_ids:
+                transcription_dict["prediction_ids"] = prediction_ids
+
+            return transcription_dict
 
         result = []
         
@@ -151,94 +237,15 @@ class Decoder():
         logits_probs = torch.nn.functional.softmax(logits.float(), dim=-1).to("cpu").detach()
 
         for i, prediction in enumerate(predictions):
-            if "beams" in prediction:
-                transcription_dict = prediction
+            if isinstance(prediction, list):
+                beam_transcription_dicts = []
+                for beam in prediction:
+                    prediction_dict = get_prediction_dict(beam)
+                    prediction_dict["logit_score"], prediction_dict["lm_score"] = beam.get("logit_score"), beam.get("lm_score")
+                    beam_transcription_dicts.append(prediction_dict)
+                result.append({"beams": beam_transcription_dicts})
             else:
-                transcription = ""
-                transcription_start_timestamps = []
-                transcription_end_timestamps = []
-                transcription_probabilities = []
-                prediction_ids = []
-
-                if "transcription" in prediction:
-                    transcription = prediction["transcription"]
-                    J = range(len(transcription))
-                else:
-                    J = range(len(prediction["ids"]))
-
-                for j in J:
-
-                    if "transcription" in prediction:
-                        token = transcription[j] if transcription[j] != " " else self.token_set.silence_token
-                        if token not in self.token_set.tokens:
-                            token = self.token_set.unk_token
-                        predicted_id = self.token_set.id_by_token[token]
-                    else:
-                        predicted_id = prediction["ids"][j]
-
-                        if predicted_id == self.token_set.silence_token_id:
-                            transcription += " "
-                        elif self.skip_special_tokens and self.token_set.tokens[predicted_id] in self.token_set.special_tokens:
-                            continue
-                        else:
-                            transcription += self.token_set.tokens[predicted_id]
-                    
-                    if prediction["start_timesteps"] is not None:
-                        start_timestep = prediction["start_timesteps"][j]
-                        transcription_start_timestamps.append(int(start_timestep * self.ms_per_timestep))
-
-                        # as we report the character based probability and more than one timestep can be responsable for the character prediction,
-                        # when a start_timestep and end_timestep are provided we'll report the mean value of the this range of timesteps,
-                        # otherwise we'll report the mean probability of a window defined be the start_timestep_t and start_timestep_t+1
-
-                        if prediction["end_timesteps"] is not None:
-                            window_end_timestep = prediction["end_timesteps"][j]
-                        else:
-                            window_end_timestep = start_timestep + 1
-                        
-                        if start_timestep == window_end_timestep: # it needs to have at least one timestep of difference
-                            window_end_timestep += 1
-
-                        window_probabilities = [x[predicted_id] for x in logits_probs[i][start_timestep:window_end_timestep]]
-                        probability = float(np.mean(window_probabilities))
-                        transcription_probabilities.append(probability)
-                        prediction_ids.append(predicted_id)
-
-
-                    if prediction["end_timesteps"] is not None:
-                        end_timestep = prediction["end_timesteps"][j]
-                        transcription_end_timestamps.append(int(end_timestep * self.ms_per_timestep))
-
-                        #probability = float(logits_probs[i][start_timestep][predicted_id])
-                        #transcription_probabilities[-1] = probability
-
-                # transcription trimming
-                if len(transcription) > 0:
-                    
-                    left_offset = len(transcription) - len(transcription.lstrip())
-                    right_offset = len(transcription) - len(transcription.rstrip())
-
-                    transcription = transcription[left_offset:len(transcription)-right_offset]
-
-                    if len(transcription_start_timestamps) > 0:
-                        transcription_start_timestamps = transcription_start_timestamps[left_offset:len(transcription_start_timestamps)-right_offset]
-                    if len(transcription_end_timestamps) > 0:
-                        transcription_end_timestamps = transcription_end_timestamps[left_offset:len(transcription_end_timestamps)-right_offset]
-                    if len(transcription_probabilities) > 0:    
-                        transcription_probabilities = transcription_probabilities[left_offset:len(transcription_probabilities)-right_offset]
-                    if len(prediction_ids) > 0:    
-                        prediction_ids = prediction_ids[left_offset:len(prediction_ids)-right_offset]
-                
-                transcription_dict = {
-                    "transcription": transcription,
-                    "start_timestamps": transcription_start_timestamps if len(transcription_start_timestamps) > 0 else None,
-                    "end_timestamps": transcription_end_timestamps if len(transcription_end_timestamps) > 0 else None,
-                    "probabilities": transcription_probabilities if len(transcription_probabilities) > 0 else None,
-                }
-                if self.return_ids:
-                    transcription_dict["prediction_ids"] = prediction_ids
-
-            result.append(transcription_dict)
+                result.append(get_prediction_dict(prediction))
 
         return result
 
@@ -666,9 +673,9 @@ class KenshoLMDecoder(Decoder):
                  unigrams_path: Optional[str] = None, unk_score_offset: Optional[float] = -10.0, lm_score_boundary: Optional[bool] = True,
                  beam_width: Optional[int] = 100, beam_prune_logp: Optional[float] = -10.0, token_min_logp: Optional[float] = -5.0,
                  prune_history: Optional[bool] = False, hotwords: Optional[list[str]] = None, hotword_weights: Optional[float] = 10.0,
-                 return_beams: Optional[bool] = False):
+                 return_beams: Optional[bool] = False, *args, **kwargs):
         
-        super().__init__(token_set)
+        super().__init__(token_set, *args, **kwargs)
 
         self.lm_path = lm_path
         self.alpha = alpha
@@ -709,7 +716,30 @@ class KenshoLMDecoder(Decoder):
             lm_score_boundary=self.lm_score_boundary
         )
 
+
     def _get_predictions(self, logits: torch.Tensor) -> list[dict]:
+        def get_start_timesteps(word_frames):
+            start_timesteps = []
+            last_end_timestep = None
+            
+            for word_frame in word_frames:
+                word = word_frame[0]
+                start_timestep = word_frame[1][0]
+                end_timestep = word_frame[1][1]
+
+                # as the pyctcdecode doesn't return the character based timestamp, we need to make an approximation of it
+                timestep_per_char = max(1, int((end_timestep - start_timestep)/len(word)))
+
+                # handling whitespaces
+                if last_end_timestep is not None:
+                    start_timesteps.append(last_end_timestep)
+
+                for i in range(0, len(word)):
+                    start_timesteps.append(start_timestep + i*timestep_per_char)
+
+                last_end_timestep = end_timestep
+
+            return start_timesteps
 
         with Pool() as pool:
 
@@ -723,34 +753,22 @@ class KenshoLMDecoder(Decoder):
 
             for decoder_output in decoder_outputs:
                 if self.return_beams:
-                    predictions.append({
-                    "beams": list(map(lambda x: x[0], decoder_output)),
-                    "logit_scores": list(map(lambda x: x[2], decoder_output)),
-                    "lm_scores": list(map(lambda x: x[3], decoder_output)),
-                    "start_timesteps": None,
-                    "end_timesteps": None,
-                })
+                    beam_predictions = []
+                    for transcription, word_frames, logit_score, lm_score in decoder_output:
+                        start_timesteps = get_start_timesteps(word_frames)
+
+                        beam_predictions.append({
+                            "transcription": transcription,
+                            "logit_score": logit_score,
+                            "lm_score": lm_score,
+                            "start_timesteps": start_timesteps,
+                            "end_timesteps": None,
+                        })
+
+                    predictions.append(beam_predictions)
                 else:
                     transcription, word_frames, logit_score, lm_score = decoder_output[0]
-                    start_timesteps = []
-                    last_end_timestep = None
-                    
-                    for word_frame in word_frames:
-                        word = word_frame[0]
-                        start_timestep = word_frame[1][0]
-                        end_timestep = word_frame[1][1]
-
-                        # as the pyctcdecode doesn't return the character based timestamp, we need to make an approximation of it
-                        timestep_per_char = max(1, int((end_timestep - start_timestep)/len(word)))
-
-                        # handling whitespaces
-                        if last_end_timestep is not None:
-                            start_timesteps.append(last_end_timestep)
-
-                        for i in range(0, len(word)):
-                            start_timesteps.append(start_timestep + i*timestep_per_char)
-
-                        last_end_timestep = end_timestep
+                    start_timesteps = get_start_timesteps(word_frames)
 
                     predictions.append({
                         "transcription": transcription,
